@@ -81,7 +81,8 @@ struct NotchPanelView: View {
                         notchW: notchW,
                         notchHeight: notchHeight,
                         hasNotch: hasNotch,
-                        hovered: idleHovered
+                        hovered: idleHovered,
+                        appState: appState
                     )
                 } else {
                     // Idle: just the notch shell
@@ -109,6 +110,11 @@ struct NotchPanelView: View {
                                 onDeny: { appState.denyPermission() }
                             )
                             .transition(.blurFade.combined(with: .scale(scale: 0.96, anchor: .top)))
+
+                            // Auto-approve toggle + countdown bar
+                            AutoApproveBar(appState: appState)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 2)
                         }
                     case .questionCard(let sid):
                         let session = appState.sessions[sid]
@@ -367,6 +373,8 @@ private struct CompactRightWing: View {
     var body: some View {
         HStack(spacing: 6) {
             if expanded {
+                // Auto-approve toggle (always visible)
+                AutoApproveToggleIcon(appState: appState)
                 NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                     soundEnabled.toggle()
                 }
@@ -377,6 +385,8 @@ private struct CompactRightWing: View {
                     NSApplication.shared.terminate(nil)
                 }
             } else {
+                // Auto-approve indicator in collapsed state
+                AutoApproveCollapsedIndicator(appState: appState)
                 // Pending approval/question badge
                 if appState.status == .waitingApproval || appState.status == .waitingQuestion {
                     Image(systemName: "bell.fill")
@@ -573,6 +583,7 @@ private struct IdleIndicatorBar: View {
     let notchHeight: CGFloat
     let hasNotch: Bool
     let hovered: Bool
+    let appState: AppState
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
 
@@ -595,6 +606,7 @@ private struct IdleIndicatorBar: View {
                         .foregroundStyle(.white.opacity(0.4))
 
                     HStack(spacing: 4) {
+                        AutoApproveToggleIcon(appState: appState)
                         NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                             soundEnabled.toggle()
                         }
@@ -612,6 +624,208 @@ private struct IdleIndicatorBar: View {
         }
         .frame(height: notchHeight)
         .animation(NotchAnimation.micro, value: hovered)
+    }
+}
+
+// MARK: - Auto-Approve Bar (toggle + countdown progress)
+
+private struct AutoApproveBar: View {
+    let appState: AppState
+    @State private var now = Date()
+    @AppStorage("autoApproveEnabled") private var isEnabled = false
+
+    private let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+
+    private var isActive: Bool {
+        appState.autoApproveStartTime != nil
+    }
+
+    private var progress: Double {
+        guard let start = appState.autoApproveStartTime else { return 0 }
+        let timeout = Double(SettingsManager.shared.autoApproveTimeout)
+        let elapsed = now.timeIntervalSince(start)
+        return max(0, 1.0 - elapsed / timeout)
+    }
+
+    private var remainingSeconds: Int {
+        guard let start = appState.autoApproveStartTime else { return 0 }
+        let timeout = Double(SettingsManager.shared.autoApproveTimeout)
+        let elapsed = now.timeIntervalSince(start)
+        return max(0, Int(ceil(timeout - elapsed)))
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Toggle("", isOn: $isEnabled)
+            .toggleStyle(.switch)
+            .scaleEffect(0.6)
+            .labelsHidden()
+
+            if isActive {
+                // Countdown text
+                Text("\(remainingSeconds)s")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(progress < 0.3 ? Color(red: 1.0, green: 0.4, blue: 0.3) : Color(red: 1.0, green: 0.7, blue: 0.28))
+                    .monospacedDigit()
+            } else {
+                Text(L10n.shared["auto_approve_60s"])
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+
+            Spacer()
+
+            // Mini progress bar
+            if isActive {
+                Capsule()
+                    .fill(Color.white.opacity(0.1))
+                    .frame(width: 60, height: 4)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(
+                                progress < 0.3
+                                    ? Color(red: 1.0, green: 0.4, blue: 0.3)
+                                    : Color(red: 0.3, green: 0.8, blue: 0.4)
+                            )
+                            .frame(width: 60 * progress, height: 4)
+                    }
+            }
+        }
+        .onReceive(timer) { time in
+            now = time
+        }
+    }
+}
+
+// MARK: - Auto-Approve Toggle Icon (always visible in toolbar)
+
+private struct AutoApproveToggleIcon: View {
+    let appState: AppState
+    @State private var now = Date()
+    @AppStorage("autoApproveEnabled") private var isEnabled = false
+
+    private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+
+    private var isCounting: Bool { appState.autoApproveStartTime != nil }
+
+    private var progress: Double {
+        guard let start = appState.autoApproveStartTime else { return 1.0 }
+        let timeout = Double(SettingsManager.shared.autoApproveTimeout)
+        return max(0, 1.0 - now.timeIntervalSince(start) / timeout)
+    }
+
+    private var remainingSeconds: Int {
+        guard let start = appState.autoApproveStartTime else { return SettingsManager.shared.autoApproveTimeout }
+        let timeout = Double(SettingsManager.shared.autoApproveTimeout)
+        return max(0, Int(ceil(timeout - now.timeIntervalSince(start))))
+    }
+
+    var body: some View {
+        if isCounting {
+            // Countdown pill with progress ring — click to cancel
+            Button(action: {
+                isEnabled = false
+                appState.cancelAutoApprove()
+            }) {
+                HStack(spacing: 3) {
+                    // Mini circular progress
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.15), lineWidth: 2)
+                            .frame(width: 14, height: 14)
+                        Circle()
+                            .trim(from: 0, to: progress)
+                            .stroke(
+                                progress < 0.3 ? Color(red: 1.0, green: 0.4, blue: 0.3) : Color(red: 0.3, green: 0.85, blue: 0.4),
+                                style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                            )
+                            .frame(width: 14, height: 14)
+                            .rotationEffect(.degrees(-90))
+                        Text("\(remainingSeconds)")
+                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule().fill(Color.white.opacity(0.08))
+                )
+            }
+            .buttonStyle(.plain)
+        } else {
+            // Toggle icon: stopwatch — larger hit area for easy tapping
+            Button(action: {
+                isEnabled.toggle()
+            }) {
+                Image(systemName: "stopwatch")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(
+                        isEnabled
+                            ? Color(red: 0.2, green: 1.0, blue: 0.4)
+                            : Color.white.opacity(0.4)
+                    )
+                    .frame(width: 26, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(
+                                isEnabled
+                                    ? Color(red: 0.2, green: 1.0, blue: 0.4).opacity(0.15)
+                                    : Color.white.opacity(0.05)
+                            )
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isEnabled ? l10n["auto_approve_on"] : l10n["auto_approve_off"])
+        }
+    }
+
+    private var l10n: L10n { L10n.shared }
+}
+
+// MARK: - Auto-Approve Collapsed Indicator
+
+private struct AutoApproveCollapsedIndicator: View {
+    let appState: AppState
+    @AppStorage("autoApproveEnabled") private var isEnabled = false
+    @State private var now = Date()
+
+    private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
+
+    private var isCounting: Bool { appState.autoApproveStartTime != nil }
+
+    private var remainingSeconds: Int {
+        guard let start = appState.autoApproveStartTime else { return SettingsManager.shared.autoApproveTimeout }
+        let timeout = Double(SettingsManager.shared.autoApproveTimeout)
+        return max(0, Int(ceil(timeout - now.timeIntervalSince(start))))
+    }
+
+    var body: some View {
+        Group {
+            if isEnabled {
+                if isCounting {
+                    Text("\(remainingSeconds)")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(
+                            remainingSeconds <= 10
+                                ? Color(red: 1.0, green: 0.4, blue: 0.3)
+                                : Color(red: 1.0, green: 0.7, blue: 0.2)
+                        )
+                        .monospacedDigit()
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule().fill(Color.white.opacity(0.1))
+                        )
+                } else {
+                    Image(systemName: "stopwatch.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Color(red: 0.2, green: 1.0, blue: 0.4))
+                }
+            }
+        }
+        .onReceive(timer) { time in now = time }
     }
 }
 

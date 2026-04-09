@@ -67,6 +67,10 @@ enum SettingsKey {
     // Tool status display
     static let showToolStatus = "showToolStatus"              // true = detailed, false = simple
 
+    // Auto-approve
+    static let autoApproveEnabled = "autoApproveEnabled"     // toggle on/off
+    static let autoApproveTimeout = "autoApproveTimeout"     // seconds, default 60
+
 }
 
 struct SettingsDefaults {
@@ -103,6 +107,9 @@ struct SettingsDefaults {
     static let sessionGroupingMode = "all"
 
     static let showToolStatus = true
+
+    static let autoApproveEnabled = false
+    static let autoApproveTimeout = 60
 }
 
 @MainActor
@@ -139,6 +146,8 @@ class SettingsManager {
             SettingsKey.mascotSpeed: SettingsDefaults.mascotSpeed,
             SettingsKey.sessionGroupingMode: SettingsDefaults.sessionGroupingMode,
             SettingsKey.showToolStatus: SettingsDefaults.showToolStatus,
+            SettingsKey.autoApproveEnabled: SettingsDefaults.autoApproveEnabled,
+            SettingsKey.autoApproveTimeout: SettingsDefaults.autoApproveTimeout,
         ])
     }
 
@@ -222,6 +231,19 @@ class SettingsManager {
     var sessionGroupingMode: String {
         get { defaults.string(forKey: SettingsKey.sessionGroupingMode) ?? SettingsDefaults.sessionGroupingMode }
         set { defaults.set(newValue, forKey: SettingsKey.sessionGroupingMode) }
+    }
+
+    var autoApproveEnabled: Bool {
+        get { defaults.bool(forKey: SettingsKey.autoApproveEnabled) }
+        set { defaults.set(newValue, forKey: SettingsKey.autoApproveEnabled) }
+    }
+
+    var autoApproveTimeout: Int {
+        get {
+            let val = defaults.integer(forKey: SettingsKey.autoApproveTimeout)
+            return val > 0 ? val : SettingsDefaults.autoApproveTimeout
+        }
+        set { defaults.set(newValue, forKey: SettingsKey.autoApproveTimeout) }
     }
 }
 

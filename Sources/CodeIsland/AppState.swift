@@ -19,6 +19,12 @@ final class AppState {
     var permissionQueue: [PermissionRequest] = []
     var questionQueue: [QuestionRequest] = []
 
+    /// Auto-approve timer — fires after configured timeout to approve pending permission
+    private var autoApproveTimer: Task<Void, Never>?
+
+    /// When the current auto-approve countdown started (nil if not active)
+    var autoApproveStartTime: Date?
+
     /// Computed: first item in permission queue (backward compat for UI reads)
     var pendingPermission: PermissionRequest? { permissionQueue.first }
     /// Computed: first item in question queue
@@ -801,10 +807,16 @@ final class AppState {
             SoundManager.shared.handleEvent("PermissionRequest")
         }
         refreshDerivedState()
+
+        // Start auto-approve timer if enabled
+        scheduleAutoApprove()
     }
 
     func approvePermission(always: Bool = false) {
         guard !permissionQueue.isEmpty else { return }
+        autoApproveTimer?.cancel()
+        autoApproveTimer = nil
+        autoApproveStartTime = nil
         let pending = permissionQueue.removeFirst()
         let responseData: Data
         if always {
@@ -838,6 +850,9 @@ final class AppState {
 
     func denyPermission() {
         guard !permissionQueue.isEmpty else { return }
+        autoApproveTimer?.cancel()
+        autoApproveTimer = nil
+        autoApproveStartTime = nil
         let pending = permissionQueue.removeFirst()
         let response = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
         pending.continuation.resume(returning: Data(response.utf8))
@@ -852,6 +867,37 @@ final class AppState {
 
         showNextPending()
         refreshDerivedState()
+    }
+
+    // MARK: - Auto-Approve
+
+    /// Schedule auto-approve for the current pending permission request.
+    /// If enabled in settings, approves after the configured timeout.
+    private func scheduleAutoApprove() {
+        autoApproveTimer?.cancel()
+        autoApproveTimer = nil
+        autoApproveStartTime = nil
+
+        guard SettingsManager.shared.autoApproveEnabled else { return }
+        guard !permissionQueue.isEmpty else { return }
+
+        let timeout = SettingsManager.shared.autoApproveTimeout
+        autoApproveStartTime = Date()
+        autoApproveTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.autoApproveStartTime = nil
+                self?.approvePermission(always: false)
+                log.info("Auto-approved permission after \(timeout)s timeout")
+            }
+        }
+    }
+
+    func cancelAutoApprove() {
+        autoApproveTimer?.cancel()
+        autoApproveTimer = nil
+        autoApproveStartTime = nil
     }
 
     func handleQuestion(_ event: HookEvent, continuation: CheckedContinuation<Data, Never>) {
